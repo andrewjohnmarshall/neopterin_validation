@@ -1,0 +1,1237 @@
+---
+title: "Lucore et al_code"
+author: "Jordan M. Lucore"
+date: "4/11/2022"
+output: html_document
+---
+# 1. SETUP
+## A. Libraries
+```{r echo=FALSE}
+library(tidyverse)
+library(lubridate)
+library(lme4)
+library(mgcv)
+library(bbmle)
+library(sjPlot)
+library(voxel)
+library(cowplot)
+library(betareg)
+library(MuMIn)
+
+```
+
+## B. Load data
+```{r}
+setwd("/Users/Jordan/Desktop/hormone research/results/Analysis/csv")
+
+#wild data
+uw <- read.csv("wild_urine log.csv", na.strings = c(NA))
+wc_p6 <- read.csv("wc_p6.csv", na.strings = c(NA))
+wc_p7 <- read.csv("wc_p7.csv", na.strings = c(NA))
+wn_p8 <- read.csv("wn_p8.csv", na.strings = c(NA))
+wn_p9 <- read.csv("wn_p9.csv", na.strings = c(NA))
+wage <- read.csv("wild_age.csv", na.strings = c(NA))
+wdemo <- read.csv("wild_demography.csv", na.strings = c(NA))
+wval <- read.csv("w_val.csv", na.strings = c(NA))
+
+#captive data
+uc <- read.csv("captive_urine log.csv", na.strings = c(NA)) 
+cc_p3 <- read.csv("cc_p3.csv", na.strings = c(NA))
+cc_p4 <- read.csv("cc_p4.csv", na.strings = c(NA))
+cn_p6 <- read.csv("cn_p6.csv", na.strings = c(NA))
+cn_p7 <- read.csv("cn_p7.csv", na.strings = c(NA))
+cdemo <- read.csv("captive_demography.csv", na.strings = c(NA))
+s <- read.csv("captive_sg.csv", na.strings = c(NA))
+cval <- read.csv("c_val.csv", na.strings = c(NA))
+
+```
+
+# 2. ASSEMBLE DATA
+## A.Wild data
+### i.Wild urine metadata
+```{r}
+#final product: wild urine sample with corresponding metadata
+uw <- uw %>%
+  rename(id = ID, sg = specific.gracity..cat., group = Group, time = Time) %>%
+  mutate(sample = as.numeric(Sample.ID)) %>%
+  filter(!is.na(sample)) %>%
+  mutate(date = dmy(Date)) %>%
+  dplyr::select(sample, id, date, time, group, sg) 
+
+```
+
+### ii.Wild neopterin values
+```{r}
+#plate 8
+wn_p8 <- wn_p8 %>%
+  rename(neo_conc = Conc...Average., cv = X.CV) %>%
+  mutate(sample = as.numeric(Sample)) %>%
+  filter(!is.na(sample)) %>%
+  filter(cv < 15) %>%
+  filter(sample != 30) %>%
+  mutate(neo_dilution = 128) %>%
+  dplyr::select(sample, neo_conc, cv, neo_dilution) %>%
+  arrange(sample)
+
+#plate 9
+wn_p9 <- wn_p9 %>%
+  rename(neo_conc = Conc...Average., cv = X.CV) %>%
+  mutate(sample = as.numeric(Sample)) %>%
+  filter(!is.na(sample)) %>%
+  filter(cv < 15) %>%
+  mutate(neo_dilution = 128) %>%
+  dplyr::select(sample, neo_conc, cv, neo_dilution) %>%
+  arrange(sample)
+  
+#join tables
+#final concentration, cv, and dilution for all wild neopterin samples except reruns
+wn_p <- full_join(wn_p8, wn_p9, by = c("sample", "neo_conc", "cv", "neo_dilution")) %>%
+  arrange(sample)
+
+```
+
+### iii.Wild neopterin reruns
+```{r}
+setwd("/Users/Jordan/Desktop/hormone research/results/Analysis/csv")
+
+#plate 8
+wn_p8 <- read.csv("wn_p8.csv", na.strings = c(NA))
+
+wn_p8 <- wn_p8 %>%
+  rename(cv = X.CV) %>%
+  mutate(conc.name = rep(c("conc1", "conc2"),times=42)) %>%
+  mutate(ID = c(1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15, 16, 16, 17, 17, 18, 18, 19, 19, 20, 20, 21, 21, 22, 22, 23, 23, 24, 24, 25, 25, 26, 26, 27, 27, 28, 28, 29, 29, 30, 30, 31, 31, 32, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37, 38, 38, 39, 39, 40, 40, 41, 41, 42, 42)) %>%
+  mutate(sample = as.numeric(Sample)) %>%
+  spread(conc.name, Conc.) %>%
+  dplyr::select(sample, ID, cv, conc1, conc2)
+
+wn_p8_1 <- wn_p8 %>%
+  filter(!is.na(conc1)) %>%
+  dplyr::select(c(sample:conc1))
+
+wn_p8_2 <- wn_p8 %>%
+  filter(!is.na(conc2)) %>%
+  dplyr::select(ID, conc2)
+
+wn_r1 <- full_join(wn_p8_1, wn_p8_2, by = "ID") %>%
+  filter(!is.na(sample)) %>%
+  filter(cv > 15) %>%
+  dplyr::select(c(sample, conc1, conc2)) %>%
+  arrange(sample)
+  
+#plate 9
+wn_p9 <- read.csv("wn_p9.csv", na.strings = c(NA))
+
+wn_p9 <- wn_p9 %>%
+  rename(conc3 = Conc., cv = X.CV) %>%
+  mutate(sample = as.numeric(Sample)) %>%
+  filter(!is.na(sample)) %>%
+  filter(is.na(cv)) %>%
+  dplyr::select(sample, conc3) 
+
+#combine 
+wn_r <- full_join(wn_r1, wn_p9, by = "sample")
+
+#pick closest values and make new datatable (can't figure out a way to automate this)
+sample <- (c(1,4,5,6,7,15,24,27,33,51,62,65))
+conc1 <- (c(16.21, 6.285, 33.97, 2.498, 17.29, 13.75, 16.21, 4.533, 3.904, 41.54, 50.79, 12.05))
+conc2 <- (c(17.15, 5.806, 30.42, 2.331, 15.12, 12.58, 20.52, 4.946, 4.521, 42, 47.33, 11.18))
+wn_r2 <- data.frame(sample, conc1, conc2)
+
+#calculations
+wn_r2 <- wn_r2 %>%
+  group_by(sample) %>%
+  mutate(stdconc = sd(c(conc1,conc2))) %>%
+  mutate(neo_conc = mean(c(conc1,conc2))) %>%
+  mutate(cv = ((stdconc/neo_conc)*100)) %>%
+  filter(cv < 15) %>%
+  mutate(neo_dilution = 128) %>%
+  dplyr::select(sample, neo_conc, cv, neo_dilution)
+
+#join with other neopterin values
+#final raw concentration, cv, and dilution for all wild neopterin samples including reruns
+wn_p <- full_join(wn_p, wn_r2, by = c("sample", "neo_conc", "cv", "neo_dilution")) %>%
+  dplyr::select(sample, neo_conc, neo_dilution) %>%
+  arrange(sample)
+
+#neopterin calculation
+#final calculated value for neopterin (neo_umolL, neo_nmol) and sample numbers
+wn_p <- wn_p %>%
+  mutate(neo_nmol = neo_conc * neo_dilution) %>%
+  mutate(neo_umolL = neo_nmol/1000) %>%
+  dplyr::select(sample, neo_umolL, neo_nmol) %>%
+  arrange(sample)
+
+```
+
+### iv. Wild creatinine values
+```{r}
+#plate 6
+wc_p6 <- wc_p6 %>%
+  rename(crea_conc = Conc...Average., cv = X.CV) %>%
+  mutate(sample = as.numeric(Sample)) %>%
+  filter(!is.na(sample)) %>%
+  filter(cv < 15) %>%
+  filter(sample != 6) %>%
+  filter(sample != 13) %>%
+  filter(sample != 33) %>%
+  mutate(crea_dilution = 16) %>%
+  dplyr::select(sample, crea_conc, cv, crea_dilution) %>%
+  arrange(sample)
+
+#plate 7
+wc_p7 <- wc_p7 %>%
+  rename(crea_conc = Conc...Average., cv = X.CV) %>%
+  mutate(sample = as.numeric(Sample)) %>%
+  filter(!is.na(sample)) %>%
+  filter(cv < 15) %>%
+  mutate(crea_dilution = if_else(sample == 6|sample == 13|sample == 33, "4", "16")) %>%
+  mutate(crea_dilution = as.numeric(crea_dilution)) %>%
+  dplyr::select(sample, crea_conc, cv, crea_dilution) %>%
+  arrange(sample)
+  
+#join plates
+#final raw concentration, cv, and dilution for all wild creatinine samples
+wc_p <- full_join(wc_p6, wc_p7, by = c("sample", "crea_conc", "cv", "crea_dilution")) %>%
+  dplyr::select(sample, crea_conc, crea_dilution) %>%
+  arrange(sample)
+ 
+#creatinine calculations
+#final calculated value for creatinine (crea_molL) and sample numbers
+wc_p <- wc_p %>%
+  mutate(crea_mgdL = crea_conc * crea_dilution) %>%
+  mutate(crea_umolL = crea_mgdL * 88.4) %>%
+  mutate(crea_mmolL = crea_umolL/1000) %>%
+  mutate(crea_molL = crea_mmolL/1000) %>%
+  dplyr::select(sample, crea_molL) %>%
+  arrange(sample)
+
+```
+
+### v. Wild calculations
+```{r}
+#join with urine metadata
+#join neo values
+uw <- full_join(uw, wn_p, by = "sample")
+
+#join crea values
+uw <- full_join(uw, wc_p, by = "sample") %>%
+  filter(!is.na(neo_umolL)) %>%
+  arrange(sample)
+
+#creatinine controlled calc
+uw <- uw %>%
+  mutate(neo_crea = neo_umolL/crea_molL)
+
+#sg controlled calc
+sg_avg <- (mean(uw$sg))-1        
+            
+wild <-  uw%>%
+  mutate(sg_avg = sg_avg) %>% 
+  mutate(sg_adjusted = sg -1) %>%
+  mutate(neo_sg = (neo_nmol*((sg_avg/sg_adjusted)))) %>%
+  dplyr::select(sample, id, date, time, group, neo_crea, neo_sg, crea_molL, sg)
+
+```
+
+### vi. Add wild demography
+```{r}
+#load birthday
+wage <- wage %>%
+  rename(name = Name) %>%
+  mutate(birthday = dmy(Date.of.Birth)) %>%
+  filter(!is.na(birthday)) %>%
+  dplyr::select(name, birthday)
+
+#load ID and sex
+wdemo <- wdemo %>%
+  rename(name = Name, id = ID, sex = Sex) %>%
+  dplyr::select(name, id, sex)
+  
+#join birthday with ID and sex
+wdemo2 <- full_join(wage, wdemo, by = "name") %>%
+  unique() %>%
+  dplyr::select(-name)
+
+#add demography data to wild neopterin values
+wild <- left_join(wild, wdemo2, by = "id") %>%
+  filter(!is.na(birthday))
+
+#calculate age
+wild <- wild %>%
+  mutate(span = (date - birthday)/364) %>%
+  mutate(age = round(span, 1)) %>%
+  dplyr::select(-c(span, birthday)) %>%
+  mutate(type = "wild")
+
+closest_only_df = 
+  new_df %>%
+  group_by(id, fecal_sample_time) %>%
+  mutate(closest_urine = urine_sample_time_diff == min(urine_sample_time_diff)) %>%
+  ungroup() %>%
+  filter(closest_urine == TRUE)
+
+```
+
+## B. Assemble Captive data
+### i. Captive urine metadata
+```{r}
+#final product: every captive urine sample collected with corresponding metadata
+uc <- uc %>%
+  rename(sample = Sample, id = Monkey.Name, bio_val = Sample.Type, group = Room, time = Time) %>%
+  mutate(date = mdy(Sample.Date)) %>%
+  dplyr::select(-Estimated.Amount..mL.) 
+
+```
+
+### ii. Captive neopterin values
+```{r}
+#plate 6
+cn_p6 <- cn_p6 %>%
+  rename(neo_dilution = Dilution.Factor) %>%
+  mutate(sample = as.numeric(Sample..)) %>%
+  filter(!is.na(sample)) %>%
+  filter(CV < 15) %>%
+  mutate(neo_conc = as.numeric(Results.Final)) %>%
+  mutate(cv = as.numeric(CV)) %>%
+  dplyr::select(sample, neo_conc, cv, neo_dilution)
+
+#plate 7
+cn_p7 <- cn_p7 %>%
+  rename(neo_dilution = Dilution.Factor) %>%
+  mutate(sample = as.numeric(Sample..)) %>%
+  filter(!is.na(sample)) %>%
+  filter(CV < 15) %>%
+  mutate(neo_conc = as.numeric(Results.Final)) %>%
+  mutate(cv = as.numeric(CV)) %>%
+  dplyr::select(sample, neo_conc, cv, neo_dilution)
+
+#join tables
+#final concentration, cv, and dilution for all captive neopterin samples
+cn_p <- full_join(cn_p6, cn_p7, cn_by = c("sample", "neo_conc", "cv", "neo_dilution")) %>%
+  arrange(sample)
+
+#neopterin calculation
+#final calculated value for neopterin (neo_umolL and neo_nmol) and sample numbers
+cn_p <- cn_p %>%
+  mutate(neo_nmol = neo_conc * neo_dilution) %>%
+  mutate(neo_umolL = neo_nmol/1000) %>%
+  dplyr::select(sample, neo_umolL, neo_nmol) %>%
+  arrange(sample) 
+
+```
+
+### iii. Captive creatinine values
+```{r}
+#plate 3
+cc_p3 <- cc_p3 %>%
+  rename(crea_dilution = Dilution.Factor) %>%
+  mutate(sample = as.numeric(Sample..)) %>%
+  filter(!is.na(sample)) %>%
+  mutate(cv = as.numeric(CV)) %>%
+  filter(cv < 15) %>%
+  mutate(crea_conc = as.numeric(Results.Final)) %>%
+  filter(!is.na(crea_conc)) %>%
+  dplyr::select(sample, crea_conc, cv, crea_dilution)
+
+#plate 4
+cc_p4 <- cc_p4 %>%
+  rename(crea_dilution = Dilution.Factor) %>%
+  mutate(sample = as.numeric(Sample..)) %>%
+  filter(!is.na(sample)) %>%
+  mutate(cv = as.numeric(CV)) %>%
+  filter(cv < 15) %>%
+  mutate(crea_conc = as.numeric(Results.Final)) %>%
+  filter(!is.na(crea_conc)) %>%
+  dplyr::select(sample, crea_conc, cv, crea_dilution)
+  
+#join plates
+#final raw concentration, cv, and dilution for all captive creatinine samples 
+cc_p <- full_join(cc_p3, cc_p4, by = c("sample", "crea_conc", "cv", "crea_dilution")) %>%
+  dplyr::select(sample, crea_conc, crea_dilution) %>%
+  arrange(sample)
+  
+#creatinine calculations
+#final calculated value for creatinine (crea_molL) and sample numbers
+cc_p <- cc_p %>%
+  mutate(crea_mgdL = crea_conc * crea_dilution) %>%
+  mutate(crea_umolL = crea_mgdL * 88.4) %>%
+  mutate(crea_mmolL = crea_umolL/1000) %>%
+  mutate(crea_molL = crea_mmolL/1000) %>%
+  dplyr::select(sample, crea_molL) %>%
+  arrange(sample)  
+
+```
+
+### iv. Captive sg values
+```{r}
+s <- s %>%
+  rename(sg = SPG, sample = Sample) %>%
+  filter(!is.na(sample)) %>%
+  dplyr::select(sample, sg)
+
+```
+
+### v. Join captive values
+```{r}
+#join neo values
+uc <- full_join(uc, cn_p, by = "sample")
+
+#join sg values 
+uc <- full_join(uc, s, by = "sample")
+
+#join crea values
+uc <- full_join(uc, cc_p, by = "sample") %>%
+  filter(!is.na(neo_umolL)) %>%
+  arrange(sample)
+
+```
+
+### vi. Captive calculations
+```{r}
+#creatinine controlled calc
+uc <- uc %>%
+  mutate(neo_crea = neo_umolL/crea_molL)
+  
+#sg controlled calc
+sg_avg <- (mean(uc$sg))-1        
+            
+captive <-  uc %>%
+  mutate(sg_avg = sg_avg) %>% 
+  mutate(sg_adjusted = sg -1) %>%
+  mutate(neo_sg = (neo_nmol*((sg_avg/sg_adjusted)))) %>%
+  dplyr::select(sample, id, date, time, group, bio_val, neo_crea, neo_sg, crea_molL, sg)
+
+```
+
+### vii. Add captive demography
+```{r}
+cdemo <- cdemo %>%
+  rename(id = CapName, sex = Sex) %>%
+  mutate(birthday = mdy(DOB)) %>%
+  dplyr::select(id, sex, birthday) 
+
+#add demography data to captive neopterin values
+captive <- left_join(captive, cdemo, by = "id") 
+
+#add age and type
+captive <- captive %>%
+  mutate(span = (date - birthday)/364) %>%
+  mutate(age = round(span, 1)) %>%
+  dplyr::select(-c(span, birthday)) %>%
+  mutate(type = "captive")
+
+```
+
+## C. Combined Data
+### i. Combine captive and wild
+```{r}
+n <- full_join(captive, wild, by = c("sample", "id", "date", "time", "group", "sex", "age", "type", "neo_crea", "neo_sg", "crea_molL", "sg"))
+```
+
+### ii. Add extraneous columns
+```{r}
+#add biological validation column, days post physical, and age catgory
+n <- n %>%
+  mutate(age_cat = case_when(age <= 1 ~ "infant",
+                             age <= 7.9 ~ "juvenile",
+                             age <= 19.9 ~ "adult",
+                             age >= 20 ~ "old adult")) %>%
+  mutate(validation = case_when(type == "wild" ~ "baseline",
+                                bio_val == "Baseline" ~ "baseline", 
+                                bio_val == "Post Injury" ~ "post injury",
+                                bio_val == "Post Physicals (same day)" ~ "baseline",
+                                bio_val == "Post Physicals (24hr)" ~ "post physical",
+                                bio_val == "Post Physicals (48hr)" ~ "post physical", 
+                                bio_val == "Post Physicals (4 days)" ~ "post physical")) %>%
+  mutate(physical = mdy(92021)) %>%
+  mutate(days_post = (date - physical)) %>%
+  mutate(days_post = as.character(days_post)) %>%
+  mutate(days_post = if_else(type == "wild", NA_character_, days_post)) %>%
+  mutate(days_post = as.numeric(days_post)) %>% 
+  mutate(logneo_crea = log(neo_crea)) %>%
+  mutate(logneo_sg = log(neo_sg)) %>%
+  mutate(age = as.numeric(age)) %>%
+  mutate(logcrea = log(crea_molL)) %>%
+  dplyr::select(-physical) %>%
+  dplyr::select(-bio_val) 
+
+#age and environment model data
+n2 <- n %>%
+  mutate(scale_age = scale(age)) %>% 
+  filter(validation != "post physical") 
+```
+
+## D. Validation data
+### i. wild validatoin data
+```{r}
+#prep data
+wval <- wval %>%
+  rename(neo_conc = Conc...Average., sample = Sample, bc= Background.Corrected) %>%
+  filter(!is.na(neo_conc)) %>%
+  mutate(odmax = 2.330) %>%
+  mutate(bind = (bc/odmax)*100) %>%
+  mutate(neo_conc = c(1536, 768, 384, 192, 96, 48, 24, 12, 6, 3, 1.5, 0.75, 0, 1.35, 4,                       12, 37, 111)) %>%
+  mutate(type = c("pool", "pool", "pool", "pool", "pool", "pool", "pool", "pool",                       "pool", "pool", "pool", "pool", "standard", "standard", "standard",                    "standard", "standard", "standard")) %>%
+  mutate(log_conc = log10(neo_conc)) %>%
+  mutate(log_conc = replace(log_conc, log_conc == "-Inf", 0)) %>%
+  filter(sample %in% c("1:16", "1:32", "1:64", "1:128", "1:256", "1:512", "1:1024",                           "Standard1", "Standard2", "Standard3", "Standard4", "Standard5",                        "Standard6")) %>%
+  mutate(status = "(B) WILD") %>%
+  dplyr::select(sample, log_conc, bind, type, status) 
+
+```
+
+### ii. Captive validation data
+```{r}
+#prep data
+cval <- cval %>%
+  rename(neo_conc = Conc...Average., sample = Sample, bc= Background.Corrected) %>%
+  filter(!is.na(neo_conc)) %>%
+  mutate(odmax = 1.53) %>%
+  mutate(bind = (bc/odmax)*100) %>%
+  mutate(neo_conc = c(64, 32, 16, 8, 4, 2, 1, 0.5, 111, 37, 12, 4, 1.35, 0)) %>%
+  mutate(type = c("pool", "pool", "pool", "pool", "pool", "pool", "pool", "pool",                        "standard", "standard", "standard", "standard", "standard",                            "standard")) %>%
+  mutate(log_conc = log10(neo_conc)) %>%
+  mutate(log_conc = replace(log_conc, log_conc == "-Inf", 0)) %>%
+  filter(sample %in% c("1:4", "1:8", "1:16", "1:32", "1:64", "1:128", "1:256",                                 "Standard1", "Standard2", "Standard3", "Standard4",                                    "Standard5", "Standard6")) %>%
+  mutate(status = "(A) CAPTIVE") %>%
+  dplyr::select(sample, log_conc, bind, type, status)
+
+
+```
+
+### iii. Combine validation data
+```{r}
+val <- full_join(wval, cval, by = c("sample", "log_conc", "bind", "type", "status"))
+
+```
+
+### iv. Biological validation data
+```{r}
+bioval <- n %>%
+  filter(id %in% c("Irene", "Logan", "Nala", "Wren", "Nkima"))
+
+postphysical <- bioval %>%
+  filter(validation == "post physical") %>%
+  filter(days_post <= 4) %>%
+  filter(days_post != 0)
+
+```
+
+### v. Figure set up
+```{r}
+#make transparent function
+makeTransparent <- function(black, alpha = 100){ 
+    newColor <- col2rgb(black)
+    apply(newColor, 2, function(curcoldata)         
+         {rgb(red = curcoldata[1],
+              green = curcoldata[2],
+              blue = curcoldata[3],
+              alpha = alpha,
+              maxColorValue=  255)})
+}   
+    
+
+tblack = makeTransparent("#000000")
+green = makeTransparent("#5ec962")
+blue = makeTransparent("#3b528b")
+
+#transparent palatte
+transpalette <- c(green, blue)
+
+```
+
+# B. Statistics
+## 1. Analytical validation
+### i. Parallelism
+```{r}
+#wild paralleism model
+wval <- wval %>%
+  mutate(bind = bind/100) %>%
+  mutate(bind = replace(bind, bind == 1.0000000, .99999))
+
+m1.beta <- betareg(bind ~ log_conc * type, 
+              data = wval)
+m2.beta <- betareg(bind ~ log_conc + type, 
+              data = wval)
+m1.norm <- lm(bind ~ log_conc * type, 
+              data = wval)
+summary(m1.norm)
+m2.norm <- lm(bind ~ log_conc + type, 
+              data = wval)
+
+bbmle::AICctab(m1.beta, m2.beta, m1.norm, m2.norm, weights = TRUE)
+
+#captive paralleism model
+cval <- cval %>%
+  mutate(bind = bind/100) %>%
+  mutate(bind = replace(bind, bind == 1.0000000, .99999))
+
+m1.beta <- betareg(bind ~ log_conc * type, 
+              data = cval)
+m2.beta <- betareg(bind ~ log_conc + type, 
+              data = cval)
+m1.norm <- lm(bind ~ log_conc * type, 
+              data = cval)
+summary(m1.norm)
+m2.norm <- lm(bind ~ log_conc + type, 
+              data = cval)
+
+bbmle::AICctab(m1.beta, m2.beta, m1.norm, m2.norm, weights = TRUE)
+
+```
+
+### ii. SG versus creatinine
+```{r}
+#pearson's correlation
+cor.test(n$neo_crea, n$neo_sg, method="pearson")
+
+#models for correlation between creatinine controlled values and SG controlled values
+## intercept model
+m1.intercept <- lmer(logneo_crea ~ 1 + (1 | id), data = n)
+summary(m1)
+
+## correlation model
+m2 <- lmer(logneo_crea ~ logneo_sg + (1 | id), data = n)
+summary(m2)
+
+#AIC comparison of intercept and correlation model
+AICctab(m1.intercept, m2, weights = TRUE)
+
+```
+
+### iii. Creatinine versus sex
+```{r}
+
+m1.intercept <- lmer(logcrea ~ 1 + (1|id), data = n)
+
+m2 <- lmer(logcrea ~ sex + (1|id), data = n)
+
+AICctab(m1.intercept, m2, weights = TRUE)
+
+```
+
+## 2. Biological validation
+### i. Vaccine response
+```{r}
+#percent difference in baseline versus post vaccine means
+means <- bioval %>%
+  group_by(validation) %>%
+  summarize(mean(neo_sg))
+((617.4815 - 372.5764)/372.5764)*100
+
+# individual zscores and pvalue calculations
+zscores <- bioval %>%
+  mutate(post = case_when(id == "Irene" ~ 438.3827,
+                          id == "Logan" ~ 719.2381,
+                          id == "Wren" ~ 723.2914,
+                          id == "Nkima" ~ 455.8928,
+                          id == "Nala" ~ 903.7322)) %>%
+  group_by(id) %>%
+  mutate(mean = mean(neo_sg)) %>%
+  mutate(sd = sd(neo_sg)) %>%
+  mutate(z = (post - mean)/sd) %>%
+  mutate(p = pnorm(z, lower.tail = FALSE))
+
+```
+
+### ii. Age and environment 
+```{r}
+#remove post vaccine samples, center and standardize age
+n2 <- n %>%
+  mutate(scale_age = scale(age)) %>% 
+  filter(validation != "post physical")
+
+#sg models
+m0 <- lmer(logneo_sg ~ 1 + (1 | id), data = n2)
+m1 <- lmer(logneo_sg ~ scale_age + type + (1 | id), data = n2) 
+m2 <- lmer(logneo_sg ~ scale_age * type + (1 | id), data = n2)
+m3 <- lmer(logneo_sg ~ scale_age + I(scale_age^2) + type + (1 | id), data = n2)
+m4 <- lmer(logneo_sg ~ scale_age + I(scale_age^2) * type + (1 | id), data = n2)
+
+AICctab(m1, m2, m3, m4, weights = TRUE)
+
+#average sg models
+modelavg <- model.avg(c(m1, m2, m3, m4)) #use conditional output
+summary(modelavg)
+exp(0.1403535) #age
+exp(1.5580438) #wild
+exp(-0.2960134) #age*wild
+exp(-0.0001468) #age^2
+exp(0.5262099) #age^2*wild
+
+exp(0.1407274) #age se
+exp(0.2239789) #wild se
+exp(0.1990338) #age*wild se
+exp(0.0672581) #age^2 se
+exp(0.2247357) #age^2*wild se
+
+#model creatinine
+m0 <- lmer(logneo_crea ~ 1 + (1 | id), data = n2)
+m1 <- lmer(logneo_crea ~ scale_age + type + (1 | id), data = n2) 
+m2 <- lmer(logneo_crea ~ scale_age * type + (1 | id), data = n2)
+m3 <- lmer(logneo_crea ~ scale_age + I(scale_age^2) + type + (1 | id), data = n2)
+m4 <- lmer(logneo_crea ~ scale_age + I(scale_age^2) * type + (1 | id), data = n2)
+
+AICctab(m1, m2, m3, m4, weights = TRUE)
+
+```
+
+
+# C. Figures
+## 1. Figure 1
+```{r}
+#wild
+p1 <- ggplot(wval, aes(x = log_conc, y = bind, group = type)) +
+  geom_line(aes(color = type)) +
+  geom_point(aes(shape = type, color = type, size = 2)) +
+  scale_color_viridis_d(begin = 0.75, end = 0.25) +
+  theme_minimal() +
+  theme(legend.title = element_blank()) +
+  ylab("percent binding") +
+  xlab("log neopterin nmol/L") +
+  theme(axis.title.x = element_text(face="bold")) +
+  theme(axis.title.y = element_text(face="bold", size = 25)) +
+  theme(legend.position="none") +
+  theme(panel.grid.minor = element_blank()) +
+  theme(panel.grid.major = element_blank()) +
+  theme(axis.line = element_line(color = "black")) +
+  annotate(geom="text", x=0.91, y= 78, label="pool",
+              color="#5ec962", size = 9, fontface = "bold") +
+  annotate(geom="text", x=0.65, y= 32, label="standard",
+              color="#3b528b", size = 9, fontface = "bold") +
+  theme(text = element_text(size = 25)) +
+  scale_y_continuous(limits = c(8, 100), breaks=seq(20,100,by=20)) 
+  
+#captive
+p2 <- ggplot(cval, aes(x = log_conc, y = bind, group = type)) +
+  scale_color_viridis_d(begin = 0.75, end = 0.25) +
+  geom_line(aes(color = type)) +
+  geom_point(aes(shape = type, color = type, size = 2)) +
+  xlab("log neopterin nmol/L") +
+  theme_minimal() +
+  theme(legend.title = element_blank()) +
+  theme(axis.title.x = element_text(face="bold")) +
+  theme(axis.line = element_line(color = "black")) +
+  theme(legend.position="none") +
+  theme(axis.title.y = element_blank()) +
+  theme(axis.line.y = element_blank()) +
+  theme(axis.text.y = element_blank()) +
+  theme(panel.grid.minor = element_blank()) +
+  theme(panel.grid.major = element_blank()) +
+  theme(text = element_text(size = 25)) +
+  scale_y_continuous(limits = c(8, 100), breaks=seq(20,100,by=20))
+
+tiff(file="fig1",
+width=20, height=26, units="cm", res=700)
+
+plot_grid(p1, p2, labels = c("(A) WILD", "(B) CAPTIVE"), 
+          align = "h",
+          rel_widths = c(1, 1),
+          hjust = c(-1.2, -.5),
+          label_size = 22)
+dev.off()
+
+```
+
+## 2. Figure 2
+```{r}
+# boxplot, mean difference in post vaccine versus baseline values
+tiff(file="fig2",
+width=13, height=14, units="cm", res=500)
+
+ggplot(bioval, aes(validation, logneo_sg, fill =validation)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(shape=16, color = tblack, size = 3) +
+  scale_fill_viridis_d(begin = 0.75, end = .50) +
+  theme(legend.title = element_blank(), axis.text.x=element_text(size=10), 
+        axis.title.y =element_text(size=10)) +
+  xlab("") +
+  ylab("log neopterin(ng/ml corr. SG)") +
+  theme_minimal() +
+  theme(axis.title.y = element_text(face="bold")) +
+  theme(axis.text.x = element_text(face="bold")) +
+  theme(axis.line = element_line(color = "black")) +
+  theme(legend.position = "none") +
+  theme(text = element_text(size = 25)) +
+  theme(panel.grid.minor = element_blank()) +
+  theme(panel.grid.major = element_blank()) 
+
+dev.off()
+
+```
+
+## 3. Figure 3
+```{r}
+# lineplot, times series, change baseline versus post vaccine values per individual
+##remove multiple pre and post samples
+bioval_line <- bioval %>%
+  filter(sample %in% c("19", "25", "36", "24", "29", "38", "16", "27", "37", "5", "30", "35", "5", "13", "16", "15", "28", "31"))
+
+##plot
+p1 <- ggplot(bioval_line, aes(x = days_post, y = logneo_sg, color = id)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  scale_color_viridis_d(begin = 0, end = .75) +
+  theme_minimal() +
+  theme(axis.line = element_line(color = "black")) +
+  scale_x_continuous(name ="days from vaccination", 
+                    breaks = c(-20, -18, -16, -14, -12, -10, -8, -6, -4, -2, 0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40)) +
+  ylab("log neopterin(ng/ml corr. SG)") +
+  theme(legend.title = element_blank()) +
+  theme(legend.position = "none") +
+  geom_vline(xintercept = 0, linetype = "dashed", size = 1) +
+  ylim(5.25, 6.9) +
+  theme(panel.grid.minor = element_blank()) +
+  theme(panel.grid.major = element_blank()) +
+  annotate(geom="text", x=-16, y= 5.97, label="Nkima",
+              color="#22a884", size = 3, fontface = "bold") +
+  annotate(geom="text", x=22, y= 5.77, label="Irene",
+              color="#440154", size = 3, fontface = "bold") +
+  annotate(geom="text", x=-7.3, y= 6.13, label="Wren",
+              color="#7ad151", size = 3, fontface = "bold") +
+  annotate(geom="text", x=4.5, y= 6.3, label="Logan",
+              color="#414487", size = 3, fontface = "bold") +
+  annotate(geom="text", x=12, y= 6.67, label="Nala",
+              color="#2a788e", size = 3, fontface = "bold") +
+  theme(text = element_text(size = 10.5)) +
+  theme(axis.title.y = element_text(face="bold")) +
+  theme(axis.title.x = element_text(face="bold"))
+
+# boxplot, spread of baseline and post vaccine samples per individual
+p2<- ggplot(bioval, aes(id, logneo_sg, fill = id)) +
+  geom_boxplot() +
+  geom_point() +
+  scale_fill_viridis_d(begin = 0, end = .75) +
+  geom_point(data = postphysical,
+             aes(id, logneo_sg),
+             color = 'red',
+             size = 4) +
+  annotate(geom="text", x="Irene", y=6.083092, label="1",
+              color="white", size = 3, fontface = "bold") +
+  annotate(geom="text", x="Irene", y=6.339327, label="p = 0.42",
+              color="black", size = 3) +
+  annotate(geom="text", x="Logan", y=6.055893, label="1",
+              color="white", size = 3, fontface = "bold") +
+  annotate(geom="text", x="Logan", y=6.578192, label="2",
+              color="white", size = 3, fontface = "bold") +
+  annotate(geom="text", x="Logan", y=6.658192, label="p = 0.03",
+              color="black", size = 3) +
+  annotate(geom="text", x="Nala", y=6.806533, label="2",
+              color="white", size = 3, fontface = "bold") +
+  annotate(geom="text", x="Nala", y=6.886533, label="p = 0.04",
+              color="black", size = 3) +
+  annotate(geom="text", x="Nkima", y=6.122258, label="4",
+              color="white", size = 3, fontface = "bold") +
+  annotate(geom="text", x="Nkima", y=6.202258, label="p = 0.07",
+              color="black", size = 3) + 
+  annotate(geom="text", x="Wren", y= 6.583812, label="2",
+              color="white", size = 3, fontface = "bold") +
+   annotate(geom="text", x="Wren",y= 6.663812, label="p = 0.23",
+              color="black", size = 3) +
+  annotate(geom="text", x="Wren", y= 6.484961, label="4",
+              color="white", size = 3, fontface = "bold") +
+  ylim(5.25, 6.9) +
+  theme_minimal() +
+  theme(axis.line = element_line(color = "black")) +
+  theme(legend.position="none") +
+  theme(axis.title.y = element_blank()) +
+  theme(axis.line.y = element_blank()) +
+  theme(axis.text.y = element_blank()) +
+  xlab("") +
+  theme(panel.grid.minor = element_blank()) +
+  theme(panel.grid.major = element_blank()) +
+  theme(text = element_text(size = 10.5)) +
+  theme(axis.text.x = element_text(face="bold"))
+
+# Combined box and line plot
+tiff(file="fig3",
+width=180, height=100, units="mm", res=500)
+
+plot_grid(p1, p2, labels = c("(A)", "(B)"), align = "h", rel_widths = c(3, 1.5), label_size = 15)
+
+dev.off()
+
+```
+
+## 4. Figure 4
+### i. Prep SG model data
+```{r}
+#sg models and data prep
+m1 <- lmer(logneo_sg ~ scale_age + type + (1 | id), data = n2) 
+m2 <- lmer(logneo_sg ~ scale_age * type + (1 | id), data = n2)
+m3 <- lmer(logneo_sg ~ scale_age + I(scale_age^2) + type + (1 | id), data = n2)
+m4 <- lmer(logneo_sg ~ scale_age + I(scale_age^2) * type + (1 | id), data = n2)
+
+#m1
+m150 <- as.data.frame(exp(confint(m1, level = .5)))
+m150$variable <- row.names(m150)
+m150$model <- "m1"
+
+m195 <- as.data.frame(exp(confint(m1)))
+m195$variable <- row.names(m150)
+m195$model <- "m1"
+
+m1d <- merge(m150, m195, by = c("model", "variable"), all = TRUE)
+
+m1coef <- as.data.frame(exp(coefTable(m1)))
+m1coef$variable <- row.names(m1coef)
+m1coef$model <- "m1"
+
+m1d2 <- merge(m1d, m1coef, by = c("model", "variable"), all = TRUE)
+
+#m2
+m250 <- as.data.frame(exp(confint(m2, level = .5)))
+m250$variable <- row.names(m250)
+m250$model <- "m2"
+
+m295 <- as.data.frame(exp(confint(m2)))
+m295$variable <- row.names(m250)
+m295$model <- "m2"
+
+m2d <- merge(m250, m295, by = c("model", "variable"), all = TRUE)
+
+m2coef <- as.data.frame(exp(coefTable(m2)))
+m2coef$variable <- row.names(m2coef)
+m2coef$model <- "m2"
+
+m2d2 <- merge(m2d, m2coef, by = c("model", "variable"), all = TRUE)
+
+#m3
+m350 <- as.data.frame(exp(confint(m3, level = .5)))
+m350$variable <- row.names(m350)
+m350$model <- "m3"
+
+m395 <- as.data.frame(exp(confint(m3)))
+m395$variable <- row.names(m350)
+m395$model <- "m3"
+
+m3d <- merge(m350, m395, by = c("model", "variable"), all = TRUE)
+
+m3coef <- as.data.frame(exp(coefTable(m3)))
+m3coef$variable <- row.names(m3coef)
+m3coef$model <- "m3"
+
+m3d2 <- merge(m3d, m3coef, by = c("model", "variable"), all = TRUE)
+
+#m4
+m450 <- as.data.frame(exp(confint(m4, level = .5)))
+m450$variable <- row.names(m450)
+m450$model <- "m4"
+
+m495 <- as.data.frame(exp(confint(m4)))
+m495$variable <- row.names(m450)
+m495$model <- "m4"
+
+m4d <- merge(m450, m495, by = c("model", "variable"), all = TRUE)
+
+m4coef <- as.data.frame(exp(coefTable(m4)))
+m4coef$variable <- row.names(m4coef)
+m4coef$model <- "m4"
+
+m4d2 <- merge(m4d, m4coef, by = c("model", "variable"), all = TRUE)
+
+#combine
+sg_m <- rbind(m1d2, m2d2, m3d2, m4d2)
+sg_m$conf_low95 <- sg_m$`2.5 %`
+sg_m$conf_high95 <- sg_m$`97.5 %`
+sg_m$conf_low50 <- sg_m$`25 %`
+sg_m$conf_high50 <- sg_m$`75 %`
+sg_m$estimate <- sg_m$Estimate
+
+sg_m <- sg_m %>%
+  dplyr::select(c(model, variable, estimate, conf_low50, conf_high50, conf_low95, conf_high95)) %>%
+  filter(variable %in% c("scale_age", "typewild", "scale_age:typewild", "I(scale_age^2)", "I(scale_age^2):typewild")) %>%
+  mutate(variable = case_when(variable == "scale_age" ~ "age",
+                               variable == "typewild" ~ "wild",
+                               variable == "scale_age:typewild" ~ "age*wild",
+                               variable == "I(scale_age^2)" ~ "age^2", 
+                               variable == "I(scale_age^2):typewild" ~ "age^2*wild")) %>%
+  mutate(model = case_when(model == "m1" ~ "m1: ΔAIC = 0, ω = 0.54",
+                               model == "m2" ~ "m2: ΔAIC = 1.5, ω = 0.25",
+                              model == "m4" ~ "m4: ΔAIC = 2.6, ω = 0.15",
+                               model == "m3" ~ "m3: ΔAIC = 4.4, ω = 0.06")) %>%
+  mutate(model = as.factor(model))
+  
+sg_m$model <- factor(sg_m$model, levels = c("m1: ΔAIC = 0, ω = 0.54",
+                                              "m2: ΔAIC = 1.5, ω = 0.25", 
+                                              "m4: ΔAIC = 2.6, ω = 0.15", 
+                                              "m3: ΔAIC = 4.4, ω = 0.06"))        
+                          
+```
+
+### ii. Prep creatinine model data
+```{r}
+#creatinine models and data prep
+m1 <- lmer(logneo_crea ~ scale_age + type + (1 | id), data = n2) 
+m2 <- lmer(logneo_crea ~ scale_age * type + (1 | id), data = n2)
+m3 <- lmer(logneo_crea ~ scale_age + I(scale_age^2) + type + (1 | id), data = n2)
+m4 <- lmer(logneo_crea ~ scale_age + I(scale_age^2) * type + (1 | id), data = n2)
+
+#m1
+m150 <- as.data.frame(exp(confint(m1, level = .5)))
+m150$variable <- row.names(m150)
+m150$model <- "m1"
+
+m195 <- as.data.frame(exp(confint(m1)))
+m195$variable <- row.names(m150)
+m195$model <- "m1"
+
+m1d <- merge(m150, m195, by = c("model", "variable"), all = TRUE)
+
+m1coef <- as.data.frame(exp(coefTable(m1)))
+m1coef$variable <- row.names(m1coef)
+m1coef$model <- "m1"
+
+m1d2 <- merge(m1d, m1coef, by = c("model", "variable"), all = TRUE)
+
+#m2
+m250 <- as.data.frame(exp(confint(m2, level = .5)))
+m250$variable <- row.names(m250)
+m250$model <- "m2"
+
+m295 <- as.data.frame(exp(confint(m2)))
+m295$variable <- row.names(m250)
+m295$model <- "m2"
+
+m2d <- merge(m250, m295, by = c("model", "variable"), all = TRUE)
+
+m2coef <- as.data.frame(exp(coefTable(m2)))
+m2coef$variable <- row.names(m2coef)
+m2coef$model <- "m2"
+
+m2d2 <- merge(m2d, m2coef, by = c("model", "variable"), all = TRUE)
+
+#m3
+m350 <- as.data.frame(exp(confint(m3, level = .5)))
+m350$variable <- row.names(m350)
+m350$model <- "m3"
+
+m395 <- as.data.frame(exp(confint(m3)))
+m395$variable <- row.names(m350)
+m395$model <- "m3"
+
+m3d <- merge(m350, m395, by = c("model", "variable"), all = TRUE)
+
+m3coef <- as.data.frame(exp(coefTable(m3)))
+m3coef$variable <- row.names(m3coef)
+m3coef$model <- "m3"
+
+m3d2 <- merge(m3d, m3coef, by = c("model", "variable"), all = TRUE)
+
+#m4
+m450 <- as.data.frame(exp(confint(m4, level = .5)))
+m450$variable <- row.names(m450)
+m450$model <- "m4"
+
+m495 <- as.data.frame(exp(confint(m4)))
+m495$variable <- row.names(m450)
+m495$model <- "m4"
+
+m4d <- merge(m450, m495, by = c("model", "variable"), all = TRUE)
+
+m4coef <- as.data.frame(exp(coefTable(m4)))
+m4coef$variable <- row.names(m4coef)
+m4coef$model <- "m4"
+
+m4d2 <- merge(m4d, m4coef, by = c("model", "variable"), all = TRUE)
+
+#combine
+crea_m <- rbind(m1d2, m2d2, m3d2, m4d2)
+crea_m$conf_low95 <- crea_m$`2.5 %`
+crea_m$conf_high95 <- crea_m$`97.5 %`
+crea_m$conf_low50 <- crea_m$`25 %`
+crea_m$conf_high50 <- crea_m$`75 %`
+crea_m$estimate <- crea_m$Estimate
+
+crea_m <- crea_m %>%
+  dplyr::select(c(model, variable, estimate, conf_low50, conf_high50, conf_low95, conf_high95)) %>%
+  filter(variable %in% c("scale_age", "typewild", "scale_age:typewild", "I(scale_age^2)", "I(scale_age^2):typewild")) %>%
+  mutate(variable = case_when(variable == "scale_age" ~ "age",
+                               variable == "typewild" ~ "wild",
+                               variable == "scale_age:typewild" ~ "age*wild",
+                               variable == "I(scale_age^2)" ~ "age^2", 
+                               variable == "I(scale_age^2):typewild" ~ "age^2*wild")) %>%
+  mutate(model = case_when(model == "m1" ~ "m1: ΔAIC = 8.1, ω = 0.02",
+                               model == "m2" ~ "m2: ΔAIC = 7, ω = 0.03",
+                               model == "m3" ~ "m3: ΔAIC = 11, ω = 0.00",
+                               model == "m4" ~ "m4: ΔAIC = 0, ω = 0.95")) %>%
+  mutate(model = as.factor(model))
+
+crea_m$model <- factor(crea_m$model, levels = c("m4: ΔAIC = 0, ω = 0.95",
+                                              "m2: ΔAIC = 7, ω = 0.03", 
+                                              "m1: ΔAIC = 8.1, ω = 0.02", 
+                                              "m3: ΔAIC = 11, ω = 0.00"))
+
+```
+
+### iii. Coeficient plot
+```{r}
+p1 <- ggplot(sg_m, aes(x = variable, y = estimate, color = model)) +
+        scale_color_viridis_d(begin = 0, end = .75) +
+        geom_hline(yintercept = 1, linetype = "dashed", size = 1, color = "grey") +
+        geom_point(position = position_dodge(width = 0.4), size = 3) + 
+        geom_linerange(aes(x = variable, ymin = conf_low95, ymax = conf_high95),
+                     position = position_dodge(width = 0.4), lwd = 1) +
+        geom_linerange(aes(x = variable, ymin = conf_low50, ymax = conf_high50),
+                     position = position_dodge(width = 0.4), lwd = 2) +
+        coord_flip() +
+        theme_minimal() +
+        theme(axis.line = element_line(color = "black")) +
+        theme(text = element_text(size = 16)) +
+        theme(panel.grid.minor = element_blank()) +
+        theme(panel.grid.major = element_blank()) +
+        theme(legend.title = element_blank()) +
+        ylim(0, 8) +
+        theme(axis.title.y = element_text(face="bold")) +
+        theme(legend.position = c(.80, .2)) +
+        theme(axis.title.x = element_blank()) +
+        theme(axis.text.x = element_blank()) +
+        theme(axis.title.y = element_blank()) +
+        theme(axis.text.y = element_text(face="bold")) +
+        labs(subtitle = "(A) SG-controlled") +
+        theme(plot.subtitle = element_text(face = "bold")) +
+        scale_x_discrete(labels = c("age","age*wild", expression("age"^2),  expression(paste("age"^2,"*wild")), "wild"))  +
+        theme(axis.text.y = element_text(face = "bold"))
+  
+p2 <- ggplot(crea_m, aes(x = variable, y = estimate, color = model)) +
+        scale_color_viridis_d(begin = 0, end = .75) +
+        geom_hline(yintercept = 1, linetype = "dashed", size = 1, color = "grey") +
+        geom_point(position = position_dodge(width = 0.4), size = 3) + 
+        geom_linerange(aes(x = variable, ymin = conf_low95, ymax = conf_high95),
+                     position = position_dodge(width = 0.4), lwd = 1) +
+        geom_linerange(aes(x = variable, ymin = conf_low50, ymax = conf_high50),
+                     position = position_dodge(width = 0.4), lwd = 2) +
+        coord_flip() +
+        theme_minimal() +
+        theme(axis.line = element_line(color = "black")) +
+        theme(text = element_text(size = 16)) +
+        theme(panel.grid.minor = element_blank()) +
+        theme(panel.grid.major = element_blank()) +
+        theme(legend.title = element_blank()) +
+        theme(legend.position = c(.80, .2)) +
+        theme(axis.title.y = element_text(face="bold")) +
+        theme(axis.title.x = element_text(face="bold")) +
+        ylim(0, 8) +
+        theme(axis.title.y = element_blank()) +
+        theme(axis.text.y = element_text(face="bold")) +
+        labs(subtitle = "(B) Creatinine-controlled") +
+        theme(plot.subtitle = element_text(face = "bold")) +
+  scale_x_discrete(labels = c("age","age*wild", expression("age"^2),  expression(paste("age"^2,"*wild")), "wild")) 
+
+
+tiff(file="fig4",
+width=180, height=250, units="mm", res=700)
+
+
+plot_grid(p1, p2, nrow = 2,
+          align = "v", axis = "l")
+
+dev.off()
+
+```
+
+## 5. Figure 5
+```{r}
+# model visualization, change with age and difference in environment
+
+tiff(file="fig5",
+width=12, height=10, units="cm", res=500)
+
+ggplot(n2, aes(x = age, y = logneo_sg))  +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 2), aes(color = type)) +
+  geom_point(aes(fill=factor(type)), size=3, shape=21, stroke=0) +
+  scale_color_viridis_d(begin = 0.75, end = .25) +
+  scale_fill_manual(values= transpalette) +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank()) +
+  theme(legend.position="none") +
+  theme(axis.line = element_line(color = "black")) +
+  ylab("log neopterin(ng/ml corr. SG)") +
+  xlab("age") +
+  annotate(geom="text", x=35, y= 6.9, label="captive",
+              color="#5ec962", size = 6, fontface = "bold") +
+  annotate(geom="text", x=25, y= 8.5, label="wild",
+              color="#3b528b", size = 6, fontface = "bold") +
+  theme(text = element_text(size = 16)) +
+  theme(axis.title.y = element_text(face="bold")) +
+  theme(axis.title.x = element_text(face="bold"))
+  
+dev.off()
+
+```
+
+# D. Tables
+## 1. Table 1
+```{r}
+# age and sampling information, mean and sd for each group
+#data prep
+wild <- n%>%
+  filter(type == "wild")
+
+captive <- n %>%
+  filter(type == "captive")
+
+#total sumary
+sd(n$neo_sg)
+mean(n$neo_sg)
+
+#summary stats
+sd(wild$neo_sg)
+mean(wild$neo_sg)
+
+sd(captive$neo_sg)
+mean(captive$neo_sg)
+
+sd(n$neo_sg)
+mean(n$neo_sg)
+
+#age summary stats
+inf <- n %>%
+  filter(age_cat == "infant")
+sd(inf$neo_sg)
+mean(inf$neo_sg)
+
+juv <- n %>%
+  filter(age_cat == "juvenile")
+sd(juv$neo_sg)
+mean(juv$neo_sg)
+
+adult <- n %>%
+  filter(age_cat == "adult")
+sd(adult$neo_sg)
+mean(adult$neo_sg)
+
+old <- n %>%
+  filter(age_cat == "old adult")
+sd(old$neo_sg)
+mean(old$neo_sg)
+
+```
+
+# E. Supplementary materials
+## 1. Supplementary figure 1
+```{r}
+# lm of sg and creatinine controlled values
+tiff(file="figs1",
+width=5, height=5, units="in", res=500)
+
+ggplot(n, aes(x = logneo_crea, y = logneo_sg)) +
+  geom_point(color = tblack) +
+  geom_smooth(method = "lm") +
+  theme_minimal() +
+  xlab("log neopterin(umol/L corr. mol creatinine)") +
+  ylab("log neopterin(ng/ml corr. SG)") +
+  theme(axis.line = element_line(color = "black")) +
+  theme(text = element_text(size = 18)) +
+  theme(panel.grid.minor = element_blank()) +
+  theme(panel.grid.major = element_blank()) +
+  theme(text = element_text(size = 16)) +
+  theme(axis.title.y = element_text(face="bold")) +
+  theme(axis.title.x = element_text(face="bold"))
+
+dev.off()
+
+```
+
+
